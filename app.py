@@ -1,64 +1,72 @@
 from flask import Flask, request, jsonify
-import pandas as pd
 import joblib
+import pandas as pd
+import numpy as np
 import os
-import traceback
 
 app = Flask(__name__)
 
-model = None
+# Charger le modèle
+model = joblib.load("model.pkl")
 
-def load_model():
-    global model
-    if model is None:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        model_path = os.path.join(base_dir, "model_fraude.pkl")
-        model = joblib.load(model_path)
-    return model
+# Noms de colonnes par défaut pour creditcard.csv
+DEFAULT_FEATURE_NAMES = [
+    "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10",
+    "V11", "V12", "V13", "V14", "V15", "V16", "V17", "V18", "V19", "V20",
+    "V21", "V22", "V23", "V24", "V25", "V26", "V27", "V28", "Time", "Amount"
+]
+
+# Si le modèle connaît déjà les noms des colonnes, on les récupère
+if hasattr(model, "feature_names_in_"):
+    FEATURE_NAMES = list(model.feature_names_in_)
+else:
+    FEATURE_NAMES = DEFAULT_FEATURE_NAMES
+
 
 @app.route("/")
 def home():
     return "API fraude active"
+
 
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
         data = request.get_json()
 
-        if data is None:
+        if not data:
             return jsonify({"error": "Aucune donnée JSON reçue"}), 400
 
-        expected_columns = [
-            "amount",
-            "oldbalanceOrg",
-            "newbalanceOrig",
-            "oldbalanceDest",
-            "newbalanceDest"
-        ]
+        # Accepte soit "data", soit "features"
+        values = data.get("data") or data.get("features")
 
-        for col in expected_columns:
-            if col not in data:
-                data[col] = 0
+        if values is None:
+            return jsonify({"error": 'La clé "data" ou "features" est requise'}), 400
 
-        df = pd.DataFrame([data])
-        df = df[expected_columns]
+        if not isinstance(values, list):
+            return jsonify({"error": "Les données doivent être une liste"}), 400
 
-        modele = load_model()
-        prediction = modele.predict(df)
+        if len(values) != len(FEATURE_NAMES):
+            return jsonify({
+                "error": f"Il faut exactement {len(FEATURE_NAMES)} valeurs"
+            }), 400
 
-        result = prediction[0]
-        if hasattr(result, "item"):
-            result = result.item()
+        # Essayer d'abord avec DataFrame + noms de colonnes
+        try:
+            df = pd.DataFrame([values], columns=FEATURE_NAMES)
+            prediction = model.predict(df)[0]
+        except Exception:
+            # Si le modèle attend juste un tableau numpy
+            arr = np.array(values).reshape(1, -1)
+            prediction = model.predict(arr)[0]
 
-        return jsonify({
-            "prediction": int(result)
-        })
+        result = "Fraude" if int(prediction) == 1 else "Non fraude"
+
+        return jsonify({"prediction": result})
 
     except Exception as e:
-        return jsonify({
-            "error": repr(e),
-            "trace": traceback.format_exc()
-        }), 500
+        return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
